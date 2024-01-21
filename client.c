@@ -402,21 +402,28 @@
 #define BUFFER_SIZE 1024 // ou la taille appropriée selon vos besoins
 #define PASSWORD_LENGTH 64  // Vous pouvez ajuster la longueur du mot de passe selon vos besoins
 
-
 typedef struct {
     char username[USERNAME_LENGTH];
+    char password[PASSWORD_LENGTH];  // Ajoutez le champ password
     // Ajoutez d'autres champs si nécessaire
 } UserInfo;
-
 
 volatile sig_atomic_t flag = 0;
 int sockfd = 0;
 char name[32];
-
 GtkWidget *messages_view;
 GtkWidget *message_entry;
 
-void str_trim_lf(char *arr, int length);
+
+void str_trim_lf(char *arr, int length) {
+    int i;
+    for (i = 0; i < length; i++) {
+        if (arr[i] == '\n') {
+            arr[i] = '\0';
+            break;
+        }
+    }
+}
 
 void create_account(int sockfd) {
     UserInfo new_user;
@@ -441,16 +448,6 @@ void create_account(int sockfd) {
     printf("%s\n", server_response);
 }
 
-
-void str_trim_lf(char *arr, int length) {
-    int i;
-    for (i = 0; i < length; i++) {
-        if (arr[i] == '\n') {
-            arr[i] = '\0';
-            break;
-        }
-    }
-}
 
 
 void append_message(const char *message) {
@@ -500,7 +497,6 @@ void recv_msg_handler() {
         memset(message, 0, sizeof(message));
     }
 }
-
 void *network_thread(void *arg) {
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd == -1) {
@@ -524,10 +520,7 @@ void *network_thread(void *arg) {
     }
 
     // Send user credentials
-    printf("Enter your credentials (name password): ");
-    char credentials[64];
-    fgets(credentials, sizeof(credentials), stdin);
-    send(sockfd, credentials, strlen(credentials), 0);
+    create_account(sockfd);
 
     pthread_t send_msg_thread;
     if (pthread_create(&send_msg_thread, NULL, (void *)send_msg_handler, NULL) != 0) {
@@ -596,43 +589,78 @@ void start_client() {
 
     pthread_join(network_thread_id, NULL);
 }
+
+
 int main() {
     signal(SIGINT, catch_ctrl_c_and_exit);
 
-    printf("1. Login\n2. Create Account\nChoose an option: ");
-    int choice;
-    if (scanf("%d", &choice) != 1) {
-        printf("Invalid choice\n");
-        return EXIT_FAILURE;
+    while (1) {
+        printf("1. Login\n2. Create Account\n3. Quit\nChoose an option: ");
+        int choice;
+        if (scanf("%d", &choice) != 1) {
+            printf("Invalid choice\n");
+            return EXIT_FAILURE;
+        }
+
+        // Flush the newline character from the buffer
+        while (getchar() != '\n');
+
+        if (choice == 3) {
+            // Quitter le programme
+            printf("Goodbye!\n");
+            return EXIT_SUCCESS;
+        }
+
+        if (choice != 1 && choice != 2) {
+            printf("Invalid choice\n");
+            continue;  // Revenir au début de la boucle
+        }
+
+        int authentication_successful = 0;
+
+        while (!authentication_successful) {
+            if (choice == 1) {
+                // Se connecter
+                // ...
+
+            } else if (choice == 2) {
+                // Créer un compte
+                create_account(sockfd);
+
+            }
+
+            printf("Please enter your name: ");
+            if (fgets(name, sizeof(name), stdin) == NULL) {
+                printf("Error reading name\n");
+                return EXIT_FAILURE;
+            }
+            str_trim_lf(name, strlen(name));
+
+            if (strlen(name) > 30 || strlen(name) < 2) {
+                printf("Name must be less than 30 and more than 2 characters.\n");
+                return EXIT_FAILURE;
+            }
+
+            start_client();
+
+            // Vérifier si l'authentification a réussi
+            // Si oui, sortir de la boucle
+            // Sinon, demander à l'utilisateur de réessayer ou de créer un compte
+            printf("Authentication failed. Do you want to retry? (y/n): ");
+            char retry_choice;
+            if (scanf(" %c", &retry_choice) != 1) {
+                printf("Invalid choice\n");
+                return EXIT_FAILURE;
+            }
+
+            // Flush the newline character from the buffer
+            while (getchar() != '\n');
+
+            if (retry_choice != 'y' && retry_choice != 'Y') {
+                break;
+            }
+        }
     }
-
-    // Flush the newline character from the buffer
-    while (getchar() != '\n');
-
-    if (choice == 1) {
-        // Se connecter
-        // ...
-    } else if (choice == 2) {
-        // Créer un compte
-        create_account(sockfd);
-    } else {
-        printf("Invalid choice\n");
-        return EXIT_FAILURE;
-    }
-
-    printf("Please enter your name: ");
-    if (fgets(name, sizeof(name), stdin) == NULL) {
-        printf("Error reading name\n");
-        return EXIT_FAILURE;
-    }
-    str_trim_lf(name, strlen(name));
-
-    if (strlen(name) > 30 || strlen(name) < 2) {
-        printf("Name must be less than 30 and more than 2 characters.\n");
-        return EXIT_FAILURE;
-    }
-
-    start_client();
 
     return EXIT_SUCCESS;
 }

@@ -507,7 +507,6 @@
 
 
 //compte :
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -545,16 +544,49 @@ GtkWidget *connected_label;
 GtkWidget *ip_label;
 GtkWidget *notebook;
 
+gboolean append_message_idle(gpointer data);
+
+void load_registered_users() {
+    FILE *file = fopen("/Users/ravin/Documents/ESGI/2/S1/c/projetS1/user_db.txt", "r");
+    if (file == NULL) {
+        // Le fichier n'existe pas, essayons de le créer
+        file = fopen("/Users/ravin/Documents/ESGI/2/S1/c/projetS1/user_db.txt", "w+");
+        if (file == NULL) {
+            perror("Error creating user database file");
+            exit(EXIT_FAILURE);
+        }
+        fclose(file);
+
+        // Ouvrir à nouveau en mode lecture
+        file = fopen("/Users/ravin/Documents/ESGI/2/S1/c/projetS1/user_db.txt", "r");
+        if (file == NULL) {
+            perror("Error opening user database file");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    int i = 0;
+    while (fscanf(file, "%s %s %s", registered_users[i].username, registered_users[i].password, registered_users[i].firstname) == 3) {
+        i++;
+        if (i >= MAX_CLIENTS) {
+            break;
+        }
+    }
+
+    fclose(file);
+}
+
+
+
 void save_user_info(UserInfo *user) {
     FILE *file = fopen("user_database.txt", "a");
     if (file == NULL) {
         perror("Error opening user database file");
         exit(EXIT_FAILURE);
     }
-    fprintf(file, "%s %s %s\n", user->username, user->password, user->firstname);
+    fprintf(file, "%s %s %s\n", user->username, user->firstname, user->password);
     fclose(file);
 }
-
 
 int create_account(int client_socket) {
     UserInfo new_user;
@@ -582,6 +614,9 @@ int create_account(int client_socket) {
     return 0;
 }
 
+void send_server_message_to_gtk(const char *message) {
+    g_idle_add(append_message_idle, (gpointer)message);
+}
 
 
 void update_label_text(const char *text, GtkWidget *label) {
@@ -612,36 +647,60 @@ void send_to_all_clients(const char *message, int sender_index) {
         }
     }
 }
-
 gboolean append_message_idle(gpointer data) {
     const char *message = (const char *)data;
     append_message(message);
-    return FALSE;  
+    return FALSE;
 }
 
+// ...
 
 void *handle_client(void *arg) {
     ClientInfo *client_info = (ClientInfo *)arg;
-
-    int client_index = client_info->index;
     int client_socket = client_info->socket;
+    int client_index = client_info->index;
 
-    char buffer[BUFFER_SIZE];
-    ssize_t recv_size;
+    // ...
 
-    // Send user authentication request
-    const char *auth_request_message = "Enter your credentials (username password firstname): ";
-    send(client_socket, auth_request_message, strlen(auth_request_message), 0);
+    // Déclarez la variable user_exists
+    int user_exists = 0;
 
-    // Receive user credentials
-    recv(client_socket, registered_users[client_index].username, sizeof(registered_users[client_index].username), 0);
-    recv(client_socket, registered_users[client_index].password, sizeof(registered_users[client_index].password), 0);
-    recv(client_socket, registered_users[client_index].firstname, sizeof(registered_users[client_index].firstname), 0);
+    // Informer le client du résultat de la vérification
+    const char *auth_result_message = user_exists ? "Authentication successful!\n" : "Authentication failed. Invalid credentials.\n";
+    send(client_socket, auth_result_message, strlen(auth_result_message), 0);
 
-    // ... (restez attentif aux autres modifications nécessaires)
+    if (!user_exists) {
+        // Déconnexion du client si l'authentification a échoué
+        close(client_socket);
+        client_sockets[client_index].socket = 0;
+        connected_clients--;
+
+        update_connected_clients();
+    } else {
+        // Envoyer un message de bienvenue au client
+        const char *welcome_message = "Welcome to the chat server!\n";
+        send(client_socket, welcome_message, strlen(welcome_message), 0);
+
+        // Attendre les messages du client et les envoyer à la fenêtre GTK
+        char received_message[BUFFER_SIZE];
+        while (recv(client_socket, received_message, sizeof(received_message), 0) > 0) {
+            send_server_message_to_gtk(received_message);
+            memset(received_message, 0, sizeof(received_message));
+        }
+
+        // Le client s'est déconnecté, mettez à jour les informations du serveur
+        close(client_socket);
+        client_sockets[client_index].socket = 0;
+        connected_clients--;
+
+        update_connected_clients();
+    }
+
+    free(client_info);
 
     return NULL;
 }
+
 
 void update_ip_label(const char *ip_text) {
     update_label_text(ip_text, ip_label);
@@ -700,10 +759,6 @@ void *start_server(void *arg) {
                 const char *auth_request_message = "Enter your credentials (name password): ";
                 send(client_socket, auth_request_message, strlen(auth_request_message), 0);
 
-                // Receive user credentials
-                recv(client_socket, registered_users[i].username, sizeof(registered_users[i].username), 0);
-                recv(client_socket, registered_users[i].password, sizeof(registered_users[i].password), 0);
-    
                 pthread_t thread;
                 pthread_create(&thread, NULL, handle_client, client_info);
                 pthread_detach(thread);
@@ -717,7 +772,11 @@ void *start_server(void *arg) {
 }
 
 int main(int argc, char *argv[]) {
-    
+    load_registered_users();
+
+    pthread_t server_thread;
+    pthread_create(&server_thread, NULL, start_server, NULL);
+
     gtk_init(&argc, &argv);
 
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
@@ -750,9 +809,6 @@ int main(int argc, char *argv[]) {
     gtk_container_add(GTK_CONTAINER(window), vbox);
 
     gtk_widget_show_all(window);
-
-    pthread_t server_thread;
-    pthread_create(&server_thread, NULL, start_server, NULL);
 
     gtk_main();
 
