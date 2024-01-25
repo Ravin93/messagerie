@@ -507,314 +507,505 @@
 
 
 //compte :
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <pthread.h>
-#include <gtk/gtk.h>
-
-#define PORT 8001
-#define MAX_CLIENTS 10
-#define BUFFER_SIZE 1024
-
-// Ajout des tailles des champs pour le nom d'utilisateur, le mot de passe et le prénom
-#define USERNAME_LENGTH 32
-#define PASSWORD_LENGTH 32
-#define FIRSTNAME_LENGTH 32
-
-typedef struct {
-    int index;
-    int socket;
-} ClientInfo;
-
-typedef struct {
-    char username[USERNAME_LENGTH];
-    char password[PASSWORD_LENGTH];
-    char firstname[FIRSTNAME_LENGTH];
-} UserInfo;
-
-int server_socket, connected_clients = 0;
-ClientInfo client_sockets[MAX_CLIENTS];
-UserInfo registered_users[MAX_CLIENTS];
-
-GtkWidget *messages_view;
-GtkWidget *connected_label;
-GtkWidget *ip_label;
-GtkWidget *notebook;
-
-gboolean append_message_idle(gpointer data);
-
-void load_registered_users() {
-    FILE *file = fopen("/Users/ravin/Documents/ESGI/2/S1/c/projetS1/user_db.txt", "r");
-    if (file == NULL) {
-        // Le fichier n'existe pas, essayons de le créer
-        file = fopen("/Users/ravin/Documents/ESGI/2/S1/c/projetS1/user_db.txt", "w+");
-        if (file == NULL) {
-            perror("Error creating user database file");
-            exit(EXIT_FAILURE);
-        }
-        fclose(file);
-
-        // Ouvrir à nouveau en mode lecture
-        file = fopen("/Users/ravin/Documents/ESGI/2/S1/c/projetS1/user_db.txt", "r");
-        if (file == NULL) {
-            perror("Error opening user database file");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    int i = 0;
-    while (fscanf(file, "%s %s %s", registered_users[i].username, registered_users[i].password, registered_users[i].firstname) == 3) {
-        i++;
-        if (i >= MAX_CLIENTS) {
-            break;
-        }
-    }
-
-    fclose(file);
-}
-
-
-
-void save_user_info(UserInfo *user) {
-    FILE *file = fopen("user_database.txt", "a");
-    if (file == NULL) {
-        perror("Error opening user database file");
-        exit(EXIT_FAILURE);
-    }
-    fprintf(file, "%s %s %s\n", user->username, user->firstname, user->password);
-    fclose(file);
-}
-
-int create_account(int client_socket) {
-    UserInfo new_user;
-    recv(client_socket, &new_user, sizeof(UserInfo), 0);
-
-    // Vérifier si l'utilisateur existe déjà
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (strcmp(registered_users[i].username, new_user.username) == 0) {
-            // Informer le client que la création de compte a échoué
-            const char *account_failed_message = "Account creation failed. Username already exists.\n";
-            send(client_socket, account_failed_message, strlen(account_failed_message), 0);
-
-            // Retourner -1 pour indiquer l'échec de la création de compte
-            return -1;
-        }
-    }
-
-    // Si l'utilisateur n'existe pas, enregistrer les informations de l'utilisateur
-    save_user_info(&new_user);
-
-    // Informer le client que la création de compte a réussi
-    const char *account_success_message = "Account created successfully!\n";
-    send(client_socket, account_success_message, strlen(account_success_message), 0);
-
-    return 0;
-}
-
-void send_server_message_to_gtk(const char *message) {
-    g_idle_add(append_message_idle, (gpointer)message);
-}
-
-
-void update_label_text(const char *text, GtkWidget *label) {
-    gtk_label_set_text(GTK_LABEL(label), text);
-}
-
-void update_connected_clients() {
-    char label_text[50];
-    sprintf(label_text, "Connected clients: %d", connected_clients);
-    update_label_text(label_text, connected_label);
-}
-
-void update_ip_label_text(const char *ip_text) {
-    update_label_text(ip_text, ip_label);
-}
-
-void append_message(const char *message) {
-    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(messages_view));
-    GtkTextIter iter;
-    gtk_text_buffer_get_end_iter(buffer, &iter);
-    gtk_text_buffer_insert(buffer, &iter, message, -1);
-}
-
-void send_to_all_clients(const char *message, int sender_index) {
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (client_sockets[i].socket != 0 && i != sender_index) {
-            send(client_sockets[i].socket, message, strlen(message), 0);
-        }
-    }
-}
-gboolean append_message_idle(gpointer data) {
-    const char *message = (const char *)data;
-    append_message(message);
-    return FALSE;
-}
-
-// ...
-
-void *handle_client(void *arg) {
-    ClientInfo *client_info = (ClientInfo *)arg;
-    int client_socket = client_info->socket;
-    int client_index = client_info->index;
-
-    // ...
-
-    // Déclarez la variable user_exists
-    int user_exists = 0;
-
-    // Informer le client du résultat de la vérification
-    const char *auth_result_message = user_exists ? "Authentication successful!\n" : "Authentication failed. Invalid credentials.\n";
-    send(client_socket, auth_result_message, strlen(auth_result_message), 0);
-
-    if (!user_exists) {
-        // Déconnexion du client si l'authentification a échoué
-        close(client_socket);
-        client_sockets[client_index].socket = 0;
-        connected_clients--;
-
-        update_connected_clients();
-    } else {
-        // Envoyer un message de bienvenue au client
-        const char *welcome_message = "Welcome to the chat server!\n";
-        send(client_socket, welcome_message, strlen(welcome_message), 0);
-
-        // Attendre les messages du client et les envoyer à la fenêtre GTK
-        char received_message[BUFFER_SIZE];
-        while (recv(client_socket, received_message, sizeof(received_message), 0) > 0) {
-            send_server_message_to_gtk(received_message);
-            memset(received_message, 0, sizeof(received_message));
-        }
-
-        // Le client s'est déconnecté, mettez à jour les informations du serveur
-        close(client_socket);
-        client_sockets[client_index].socket = 0;
-        connected_clients--;
-
-        update_connected_clients();
-    }
 
-    free(client_info);
-
-    return NULL;
-}
-
+// #include <stdio.h>
+// #include <stdlib.h>
+// #include <string.h>
+// #include <unistd.h>
+// #include <arpa/inet.h>
+// #include <pthread.h>
+// #include <gtk/gtk.h>
 
-void update_ip_label(const char *ip_text) {
-    update_label_text(ip_text, ip_label);
-}
+
+// #define PORT 8001
+// #define MAX_CLIENTS 10
+// #define BUFFER_SIZE 1024
+
+// #define USERNAME_LENGTH 32
+// #define PASSWORD_LENGTH 32
+// #define FIRSTNAME_LENGTH 32
+
+// #define UPDATE_MESSAGES_SIGNAL "update-messages-signal"
+// #define UPDATE_MESSAGES_TYPE G_TYPE_STRING
+// #define MESSAGE_QUEUE_SIZE 100
+
+// typedef struct {
+//     int index;
+//     int socket;
+// } ClientInfo;
+
+// typedef struct {
+//     char username[USERNAME_LENGTH];
+//     char password[PASSWORD_LENGTH];
+//     char firstname[FIRSTNAME_LENGTH];
+// } UserInfo;
+
+// typedef struct {
+//     char messages[MESSAGE_QUEUE_SIZE][BUFFER_SIZE];
+//     int front;
+//     int rear;
+//     int size; 
+// } MessageQueue;
+
+
+// MessageQueue message_queue;
+// pthread_mutex_t message_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+
+// int server_socket, connected_clients = 0;
+// ClientInfo client_sockets[MAX_CLIENTS];
+// UserInfo registered_users[MAX_CLIENTS];
+
+// GtkWidget *messages_view;
+// GtkWidget *connected_label;
+// GtkWidget *ip_label;
+// GtkWidget *notebook;
+// GtkWidget *users_view;
+// GtkListStore *users_list_store;
 
-void *start_server(void *arg) {
-    (void)arg;
 
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t addr_len = sizeof(client_addr);
+// gboolean append_message_idle(gpointer data);
+// gboolean update_messages_view_idle(gpointer data);
+
+
+// pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-    server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == -1) {
-        perror("Error creating socket");
-        exit(EXIT_FAILURE);
-    }
 
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = inet_addr("172.20.10.2");
-    server_addr.sin_port = htons(PORT);
 
-    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        perror("Error binding socket");
-        exit(EXIT_FAILURE);
-    }
+// void load_registered_users() {
+//     FILE *file = fopen("/Users/ravin/Documents/ESGI/2/S1/c/projetS1/user_db.txt", "r");
+//     if (file == NULL) {
+//         // Le fichier n'existe pas, essayons de le créer
+//         file = fopen("/Users/ravin/Documents/ESGI/2/S1/c/projetS1/user_db.txt", "w+");
+//         if (file == NULL) {
+//             perror("Error creating user database file");
+//             exit(EXIT_FAILURE);
+//         }
+//         fclose(file);
+
+//         // Ouvrir à nouveau en mode lecture
+//         file = fopen("/Users/ravin/Documents/ESGI/2/S1/c/projetS1/user_db.txt", "r");
+//         if (file == NULL) {
+//             perror("Error opening user database file");
+//             exit(EXIT_FAILURE);
+//         }
+//     }
+
+//     int i = 0;
+//     while (fscanf(file, "%s %s %s", registered_users[i].username, registered_users[i].password, registered_users[i].firstname) == 3) {
+//         i++;
+//         if (i >= MAX_CLIENTS) {
+//             break;
+//         }
+//     }
+
+//     fclose(file);
+// }
+
+
+// void save_user_info(UserInfo *user) {
+//     FILE *file = fopen("/Users/ravin/Documents/ESGI/2/S1/c/projetS1/user_db.txt", "a");
+//     if (file == NULL) {
+//         perror("Error opening user database file");
+//         exit(EXIT_FAILURE);
+//     }
+//     fprintf(file, "%s %s %s\n", user->username, user->firstname, user->password);
+//     fclose(file);
+// }
+
+
+// int user_exists(const char *username) {
+//     for (int i = 0; i < MAX_CLIENTS; i++) {
+//         if (client_sockets[i].socket != 0 && strcmp(registered_users[i].username, username) == 0) {
+//             return 1;  // Le nom d'utilisateur existe
+//         }
+//     }
+//     return 0;  // Le nom d'utilisateur n'existe pas
+// }
+
+// int create_account(int client_socket) {
+//     UserInfo new_user;
+//     recv(client_socket, &new_user, sizeof(UserInfo), 0);
+
+//     // Vérifier si l'utilisateur existe déjà
+//     if (user_exists(new_user.username)) {
+//         // Informer le client que la création de compte a échoué
+//         const char *account_failed_message = "Account creation failed. Username already exists.\n";
+//         send(client_socket, account_failed_message, strlen(account_failed_message), 0);
+
+//         // Retourner -1 pour indiquer l'échec de la création de compte
+//         return -1;
+//     }
+
+//     // Si l'utilisateur n'existe pas, enregistrer les informations de l'utilisateur
+//     save_user_info(&new_user);
+
+//     // Informer le client que la création de compte a réussi
+//     const char *account_success_message = "Account created successfully!\n";
+//     send(client_socket, account_success_message, strlen(account_success_message), 0);
+
+//     return 0;
+// }
+
+// void update_ip_label_text(const char *text) {
+//     gtk_label_set_text(GTK_LABEL(ip_label), text);
+// }
+
+// void send_server_message_to_gtk(const char *message) {
+//     // Utiliser g_idle_add pour ajouter la fonction à la file d'attente principale GTK
+//     g_idle_add(update_messages_view_idle, g_strdup(message));
+// }
 
-    if (listen(server_socket, MAX_CLIENTS) == -1) {
-        perror("Error listening for connections");
-        exit(EXIT_FAILURE);
-    }
-
-    update_ip_label_text("Server IP: Not available");
-
-    while (1) {
-        int client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &addr_len);
-        if (client_socket == -1) {
-            perror("Error accepting connection");
-            continue;
-        }
-
-        int i;
-        for (i = 0; i < MAX_CLIENTS; i++) {
-            if (client_sockets[i].socket == 0) {
-                client_sockets[i].socket = client_socket;
-                client_sockets[i].index = i;
-
-                connected_clients++;
-                update_connected_clients();
-
-                update_ip_label_text("Server IP: Connected");
-
-                ClientInfo *client_info = malloc(sizeof(ClientInfo));
-                memcpy(client_info, &client_sockets[i], sizeof(ClientInfo));
-
-                // Send user authentication request
-                const char *auth_request_message = "Enter your credentials (name password): ";
-                send(client_socket, auth_request_message, strlen(auth_request_message), 0);
-
-                pthread_t thread;
-                pthread_create(&thread, NULL, handle_client, client_info);
-                pthread_detach(thread);
-
-                break;
-            }
-        }
-    }
-
-    return NULL;
-}
-
-int main(int argc, char *argv[]) {
-    load_registered_users();
-
-    pthread_t server_thread;
-    pthread_create(&server_thread, NULL, start_server, NULL);
-
-    gtk_init(&argc, &argv);
-
-    GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "Server Dashboard");
-    gtk_container_set_border_width(GTK_CONTAINER(window), 10);
-    gtk_widget_set_size_request(window, 400, 300);
-
-    notebook = gtk_notebook_new();
-
-    messages_view = gtk_text_view_new();
-    gtk_text_view_set_editable(GTK_TEXT_VIEW(messages_view), FALSE);
-    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(messages_view), GTK_WRAP_WORD_CHAR);
-
-    connected_label = gtk_label_new("Connected clients: 0");
-
-    ip_label = gtk_label_new("Server IP: Not available");
-
-    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
-    gtk_box_pack_start(GTK_BOX(vbox), notebook, TRUE, TRUE, 0);
-    gtk_box_pack_start(GTK_BOX(vbox), connected_label, FALSE, FALSE, 0);
-
-    GtkWidget *messages_tab_label = gtk_label_new("Messages");
-    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), messages_view, messages_tab_label);
-
-    GtkWidget *ip_tab_label = gtk_label_new("Server IP");
-    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), ip_label, ip_tab_label);
-
-    g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
-
-    gtk_container_add(GTK_CONTAINER(window), vbox);
-
-    gtk_widget_show_all(window);
-
-    gtk_main();
-
-    return 0;
-}
-
+
+
+// void update_label_text(const char *text, GtkWidget *label) {
+//     gtk_label_set_text(GTK_LABEL(label), text);
+// }
+
+// void update_connected_clients() {
+//     char label_text[50];
+//     sprintf(label_text, "Connected clients: %d", connected_clients);
+//     update_label_text(label_text, connected_label);
+// }
+
+
+// void append_message(const char *message) {
+//     GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(messages_view));
+//     GtkTextIter iter;
+//     gtk_text_buffer_get_end_iter(buffer, &iter);
+//     gtk_text_buffer_insert(buffer, &iter, message, -1);
+// }
+
+// void send_to_all_clients(const char *message, int sender_index) {
+//     for (int i = 0; i < MAX_CLIENTS; i++) {
+//         if (client_sockets[i].socket != 0 && i != sender_index) {
+//             send(client_sockets[i].socket, message, strlen(message), 0);
+//             send_server_message_to_gtk(message);  // Ajoutez cette ligne
+//         }
+//     }
+// }
+
+
+// gboolean append_message_idle(gpointer data) {
+//     const char *message = (const char *)data;
+//     append_message(message);
+//     return FALSE;
+// }
+
+
+// void initialize_message_queue() {
+//     message_queue.front = -1;
+//     message_queue.rear = -1;
+//     message_queue.size = 0;
+// }
+
+// int is_queue_empty() {
+//     return message_queue.size == 0;
+// }
+
+// int is_queue_full() {
+//     return message_queue.size == MESSAGE_QUEUE_SIZE;
+// }
+
+
+// void enqueue_message(const char *message) {
+//     pthread_mutex_lock(&message_queue_mutex);
+
+//     if (is_queue_full()) {
+//         // Handle full queue (e.g., drop the message or wait)
+//     } else {
+//         if (is_queue_empty()) {
+//             message_queue.front = 0;
+//         }
+
+//         message_queue.rear = (message_queue.rear + 1) % MESSAGE_QUEUE_SIZE;
+        
+//         // Ajouter un printf pour afficher le message avant l'ajout
+//         printf("Enqueuing message: %s\n", message);
+
+//         strcpy(message_queue.messages[message_queue.rear], message);
+//         message_queue.size++;
+//     }
+
+//     // Ajouter un printf pour afficher le contenu de la file d'attente après l'ajout
+//     printf("Queue content after enqueue: ");
+//     for (int i = message_queue.front; i != message_queue.rear; i = (i + 1) % MESSAGE_QUEUE_SIZE) {
+//         printf("%s, ", message_queue.messages[i]);
+//     }
+//     printf("\n");
+
+//     pthread_mutex_unlock(&message_queue_mutex);
+// }
+
+
+// void dequeue_message(char *message) {
+//     pthread_mutex_lock(&message_queue_mutex);
+
+//     if (is_queue_empty()) {
+//         // Handle empty queue (e.g., wait or provide a default message)
+//     } else {
+//         strcpy(message, message_queue.messages[message_queue.front]);
+//         message_queue.front = (message_queue.front + 1) % MESSAGE_QUEUE_SIZE;
+//         message_queue.size--;
+//     }
+
+//     pthread_mutex_unlock(&message_queue_mutex);
+// }
+
+
+// // ...
+
+// void *handle_client(void *arg) {
+//     ClientInfo *client_info = (ClientInfo *)arg;
+//     int client_socket = client_info->socket;
+//     int client_index = client_info->index;
+
+//     // Envoyer un message de bienvenue au client
+//     const char *welcome_message = "Welcome to the chat server!\n";
+//     send(client_socket, welcome_message, strlen(welcome_message), 0);
+
+//     // Attendre les messages du client et les envoyer à la fenêtre GTK
+//     char received_message[BUFFER_SIZE];
+//     while (recv(client_socket, received_message, sizeof(received_message), 0) > 0) {
+//         char username[USERNAME_LENGTH];
+//         char message[BUFFER_SIZE];
+
+//         // Analyser le message pour extraire le nom d'utilisateur et le message
+//         if (sscanf(received_message, "%[^:]: %[^\n]", username, message) == 2) {
+//             // Ajouter des printf pour afficher des informations sur le message reçu
+//             printf("Received message from client %s: %s\n", username, message);
+
+//             // Vérifier l'authentification de l'utilisateur
+//             int user_authenticated = 0;
+//             for (int i = 0; i < MAX_CLIENTS; i++) {
+//                 if (strcmp(registered_users[i].username, username) == 0) {
+//                     user_authenticated = 1;
+//                     break;
+//                 }
+//             }
+
+//             // Enregistrer le message seulement si l'utilisateur est authentifié
+//             if (user_authenticated) {
+//                 // Enfiler le message avec le nom d'utilisateur dans la file d'attente
+//                 char formatted_message[BUFFER_SIZE];
+//                 snprintf(formatted_message, sizeof(formatted_message), "%s: %s", username, message);
+//                 enqueue_message(formatted_message);
+
+//                 // Ajouter des printf pour afficher des informations avant et après l'enfilement
+//                 printf("Before enqueue - Queue size: %d, Front: %d, Rear: %d\n", message_queue.size, message_queue.front, message_queue.rear);
+//                 enqueue_message(formatted_message);
+//                 printf("After enqueue - Queue size: %d, Front: %d, Rear: %d\n", message_queue.size, message_queue.front, message_queue.rear);
+
+//                 // Envoyer le message à tous les clients
+//                 send_to_all_clients(formatted_message, client_index);
+
+//                 // Émettre le signal pour notifier le thread principal
+//                 g_signal_emit_by_name(G_OBJECT(messages_view), UPDATE_MESSAGES_SIGNAL, formatted_message);
+//             }
+//         }
+
+//         // Effacer le tampon du message reçu
+//         memset(received_message, 0, sizeof(received_message));
+//     }
+
+//     // Le client s'est déconnecté, mettez à jour les informations du serveur
+//     close(client_socket);
+//     client_sockets[client_index].socket = 0;
+//     connected_clients--;
+
+//     update_connected_clients();
+
+//     pthread_mutex_unlock(&clients_mutex);
+
+//     free(client_info);
+
+//     return NULL;
+// }
+
+// // ...
+
+
+// void update_messages_signal_handler(G_GNUC_UNUSED GObject *object, gchar *message, G_GNUC_UNUSED gpointer user_data) {
+//     // Ajouter le message à la vue des messages
+//     append_message(message);
+// }
+
+// guint update_messages_signal_id;
+
+// void setup_signals() {
+//     update_messages_signal_id = g_signal_new(
+//         UPDATE_MESSAGES_SIGNAL,
+//         G_TYPE_OBJECT,
+//         G_SIGNAL_RUN_LAST,
+//         0,
+//         NULL, NULL,
+//         g_cclosure_marshal_VOID__STRING,
+//         G_TYPE_NONE,
+//         1,
+//         UPDATE_MESSAGES_TYPE
+//     );
+// }
+
+// gboolean update_messages_view_idle(gpointer data) {
+//     // Extraire les messages de la file d'attente et les afficher dans la vue des messages
+//     pthread_mutex_lock(&message_queue_mutex);
+//     while (message_queue.front != -1 && message_queue.rear != -1) {
+//         const char *message = message_queue.messages[message_queue.front];
+//         gdk_threads_add_idle(append_message_idle, g_strdup(message));
+//         message_queue.front = (message_queue.front + 1) % MESSAGE_QUEUE_SIZE;
+//     }
+//     pthread_mutex_unlock(&message_queue_mutex);
+
+//     return FALSE;
+// }
+
+
+// void *start_server(void *arg) {
+//     (void)arg;
+
+//     struct sockaddr_in server_addr, client_addr;
+//     socklen_t addr_len = sizeof(client_addr);
+
+//     UserInfo new_user; 
+
+//     server_socket = socket(AF_INET, SOCK_STREAM, 0);
+//     if (server_socket == -1) {
+//         perror("Error creating socket");
+//         exit(EXIT_FAILURE);
+//     }
+//     printf("Server socket created successfully.\n");
+
+//     server_addr.sin_family = AF_INET;
+//     server_addr.sin_addr.s_addr = inet_addr("172.20.10.2");
+//     server_addr.sin_port = htons(PORT);
+
+//     if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
+//         perror("Error binding socket");
+//         exit(EXIT_FAILURE);
+//     }
+//     printf("Socket binding successful.\n");
+//     if (listen(server_socket, MAX_CLIENTS) == -1) {
+//         perror("Error listening for connections");
+//         exit(EXIT_FAILURE);
+//     }
+//     printf("Listening for connections.\n");
+//     update_ip_label_text("Server IP: Not available");
+
+//     while (1) {
+//         int client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &addr_len);
+//         if (client_socket == -1) {
+//             perror("Error accepting connection");
+//             continue;
+//         }
+//         printf("Client connected.\n");
+//         int i;
+//         for (i = 0; i < MAX_CLIENTS; i++) {
+//             if (client_sockets[i].socket == 0) {
+//                 client_sockets[i].socket = client_socket;
+//                 client_sockets[i].index = i;
+
+//                 connected_clients++;
+//                 update_connected_clients();
+
+//                 update_ip_label_text("Server IP: Connected");
+
+//                 ClientInfo *client_info = malloc(sizeof(ClientInfo));
+//                 memcpy(client_info, &client_sockets[i], sizeof(ClientInfo));
+
+//                 if (user_exists(new_user.username)) {
+//                     // Informer le client que l'authentification a échoué
+//                     const char *auth_failed_message = "Authentication failed. Please try again.\n";
+//                     send(client_socket, auth_failed_message, strlen(auth_failed_message), 0);
+//                 } else {
+//                     // Informer le client que l'authentification a réussi
+//                     const char *auth_success_message = "Authentication successful. Welcome to the chat server!\n";
+//                     send(client_socket, auth_success_message, strlen(auth_success_message), 0);
+//                     break;  // Sortir de la boucle après l'authentification réussie
+//                 }
+
+//                 pthread_t thread;
+//                 pthread_create(&thread, NULL, handle_client, client_info);
+//                 pthread_detach(thread);
+
+//                 break;
+//             }
+//         }
+//     }
+
+//     return NULL;
+// }
+
+// void create_users_page() {
+//     // Créez le GtkTreeView et le GtkListStore
+//     users_list_store = gtk_list_store_new(3, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING);
+
+//     users_view = gtk_tree_view_new_with_model(GTK_TREE_MODEL(users_list_store));
+
+//     // Ajoutez des colonnes pour le nom d'utilisateur, le prénom et le mot de passe
+//     for (int i = 0; i < 3; i++) {
+//         GtkCellRenderer *renderer = gtk_cell_renderer_text_new();
+//         GtkTreeViewColumn *column = gtk_tree_view_column_new_with_attributes("", renderer, "text", i, NULL);
+//         gtk_tree_view_append_column(GTK_TREE_VIEW(users_view), column);
+//     }
+
+//     GtkWidget *users_tab_label = gtk_label_new("Utilisateurs");
+//     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), users_view, users_tab_label);
+// }
+
+// void update_ip_label_text(const char *text);
+
+// int main(int argc, char *argv[]) {
+
+
+//     load_registered_users();
+
+//     pthread_t server_thread;
+//     pthread_create(&server_thread, NULL, start_server, NULL);
+
+//     gtk_init(&argc, &argv);
+
+//     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+//     gtk_window_set_title(GTK_WINDOW(window), "Server Dashboard");
+//     gtk_container_set_border_width(GTK_CONTAINER(window), 10);
+//     gtk_widget_set_size_request(window, 400, 300);
+
+//     notebook = gtk_notebook_new();
+
+//     messages_view = gtk_text_view_new();
+//     gtk_text_view_set_editable(GTK_TEXT_VIEW(messages_view), FALSE);
+//     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(messages_view), GTK_WRAP_WORD_CHAR);
+
+//     connected_label = gtk_label_new("Connected clients: 0");
+
+//     ip_label = gtk_label_new("Server IP: Not available");
+
+//     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+//     gtk_box_pack_start(GTK_BOX(vbox), notebook, TRUE, TRUE, 0);
+//     gtk_box_pack_start(GTK_BOX(vbox), connected_label, FALSE, FALSE, 0);
+
+//     GtkWidget *messages_tab_label = gtk_label_new("Messages");
+//     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), messages_view, messages_tab_label);
+
+//     GtkWidget *ip_tab_label = gtk_label_new("Server IP");
+//     gtk_notebook_append_page(GTK_NOTEBOOK(notebook), ip_label, ip_tab_label);
+
+//     g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+
+//     gtk_container_add(GTK_CONTAINER(window), vbox);
+
+//     gtk_widget_show_all(window);
+
+//     initialize_message_queue();
+//     // Initialize message queue
+//     message_queue.front = -1;
+//     message_queue.rear = -1;
+
+//     setup_signals();
+
+//     gtk_main();
+
+//     return 0;
+// }
 
 
 //Gestion des amies 

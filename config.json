@@ -1,0 +1,6 @@
+{
+  "server_ip": "192.168.1.26",
+  "server_port": 12345,
+  "max_clients": 10,
+  "buffer_size": 1024
+}

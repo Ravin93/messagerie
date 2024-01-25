@@ -396,6 +396,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <stdbool.h>  //  utiliser le type de données bool
 
 #define LENGTH 2048
 #define USERNAME_LENGTH 32
@@ -404,8 +405,7 @@
 
 typedef struct {
     char username[USERNAME_LENGTH];
-    char password[PASSWORD_LENGTH];  // Ajoutez le champ password
-    // Ajoutez d'autres champs si nécessaire
+    char password[PASSWORD_LENGTH];  
 } UserInfo;
 
 volatile sig_atomic_t flag = 0;
@@ -414,6 +414,7 @@ char name[32];
 GtkWidget *messages_view;
 GtkWidget *message_entry;
 
+bool exit_requested = false;
 
 void str_trim_lf(char *arr, int length) {
     int i;
@@ -424,6 +425,7 @@ void str_trim_lf(char *arr, int length) {
         }
     }
 }
+
 
 void create_account(int sockfd) {
     UserInfo new_user;
@@ -448,6 +450,76 @@ void create_account(int sockfd) {
     printf("%s\n", server_response);
 }
 
+int check_account_existence(int sockfd, const char *username) {
+    char buffer[BUFFER_SIZE];
+    sprintf(buffer, "CHECK_EXISTENCE %s", username);
+    send(sockfd, buffer, strlen(buffer), 0);
+
+    // Attendre la réponse du serveur (compte existe ou non)
+    recv(sockfd, buffer, sizeof(buffer), 0);
+
+    // Analyser la réponse
+    if (strcmp(buffer, "ACCOUNT_EXISTS") == 0) {
+        printf("Account already exists. Please choose a different username.\n");
+        return 1;  // Le compte existe déjà
+    } else {
+        return 0;  // Le compte n'existe pas
+    }
+}
+
+int login(int sockfd) {
+    // Client authentication process
+    const char *auth_request_message = "Enter your credentials (name password): ";
+    send(sockfd, auth_request_message, strlen(auth_request_message), 0);
+
+    UserInfo user_info;
+
+    // Receive user input for credentials
+    printf("Enter your credentials (username password): ");
+    scanf("%s %s", user_info.username, user_info.password);
+
+    // Debug information
+    printf("Sending credentials to server: Username: %s, Password: %s\n", user_info.username, user_info.password);
+
+    // Send the entered credentials to the server as a UserInfo structure
+    send(sockfd, &user_info, sizeof(UserInfo), 0);
+
+    // Debug information
+    printf("Credentials sent. Waiting for authentication result...\n");
+
+    // Add logic to receive authentication result from the server
+    char auth_result[BUFFER_SIZE];
+    ssize_t received_bytes = recv(sockfd, auth_result, sizeof(auth_result) - 1, 0);
+    printf("After receiving authentication result\n");
+
+    if (received_bytes > 0) {
+        // Null-terminate the received data
+        auth_result[received_bytes] = '\0';
+        printf("Received authentication result from server: \"%s\"\n", auth_result);
+
+        if (strcmp(auth_result, "Authentication successful. Welcome to the chat server!") == 0) {
+            printf("Authentication successful!\n");
+            // Traiter l'authentification réussie ici
+            return 1;
+        } else {
+            printf("Authentication failed. Please try again.\n");
+            // Traiter l'authentification échouée ici
+            return 0;
+        }
+    } else if (received_bytes == 0) {
+        printf("Connection closed by the server.\n");
+        // Ajoutez une logique pour gérer la fermeture de connexion si nécessaire
+    } else {
+        perror("Error receiving authentication result");
+        // Ajoutez une logique pour gérer l'erreur de réception si nécessaire
+    }
+
+    // En cas d'erreur, retournez une valeur appropriée (par exemple, -1)
+    return -1;
+}
+
+
+
 
 
 void append_message(const char *message) {
@@ -457,9 +529,12 @@ void append_message(const char *message) {
     gtk_text_buffer_insert(buffer, &iter, message, -1);
 }
 
+void send_message(GtkWidget *widget, gpointer data);
+
 
 void catch_ctrl_c_and_exit(int sig) {
     flag = 1;
+    exit_requested = true;  
 }
 
 void send_msg_handler() {
@@ -475,6 +550,7 @@ void send_msg_handler() {
         } else {
             sprintf(buffer, "%s: %s\n", name, message);
             send(sockfd, buffer, strlen(buffer), 0);
+            printf("Message sent to server: %s\n", buffer);
         }
 
         bzero(message, LENGTH);
@@ -488,6 +564,7 @@ void recv_msg_handler() {
     while (1) {
         int receive = recv(sockfd, message, LENGTH, 0);
         if (receive > 0) {
+            printf("Received message from server: %s\n", message);
             append_message(message);
         } else if (receive == 0) {
             break;
@@ -498,64 +575,88 @@ void recv_msg_handler() {
     }
 }
 void *network_thread(void *arg) {
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd == -1) {
+    int local_sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (local_sockfd == -1) {
         perror("Error creating socket");
         exit(EXIT_FAILURE);
     }
-
+    printf("Client socket created successfully.\n");
+    
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(8001);
 
     if (inet_pton(AF_INET, "172.20.10.2", &server_addr.sin_addr) <= 0) {
-        perror("Invalid address/ Address not supported");
+        perror("Invalid address/Address not supported");
         exit(EXIT_FAILURE);
     }
 
     int err = connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr));
     if (err == -1) {
-        perror("ERROR: connect");
+        perror("ERREUR : connect");
         exit(EXIT_FAILURE);
     }
+    printf("Connecté au serveur.\n");
 
-    // Send user credentials
-    create_account(sockfd);
+    int authentication_successful = login(sockfd);
 
-    pthread_t send_msg_thread;
-    if (pthread_create(&send_msg_thread, NULL, (void *)send_msg_handler, NULL) != 0) {
-        perror("ERROR: pthread");
-        exit(EXIT_FAILURE);
+    if (authentication_successful) {
+        // Create GUI elements
+        gtk_init(NULL, NULL);
+
+        GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_window_set_title(GTK_WINDOW(window), "Chat Client");
+        gtk_container_set_border_width(GTK_CONTAINER(window), 10);
+        gtk_widget_set_size_request(window, 400, 300);
+
+        messages_view = gtk_text_view_new();
+        gtk_text_view_set_editable(GTK_TEXT_VIEW(messages_view), FALSE);
+        gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(messages_view), GTK_WRAP_WORD_CHAR);
+
+        message_entry = gtk_entry_new();
+        g_signal_connect(message_entry, "activate", G_CALLBACK(send_message), NULL);
+
+        GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
+        gtk_box_pack_start(GTK_BOX(vbox), messages_view, TRUE, TRUE, 0);
+        gtk_box_pack_start(GTK_BOX(vbox), message_entry, FALSE, FALSE, 0);
+
+        g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+
+        gtk_container_add(GTK_CONTAINER(window), vbox);
+
+        gtk_widget_show_all(window);
+
+        pthread_t send_msg_thread;
+        if (pthread_create(&send_msg_thread, NULL, (void *)send_msg_handler, NULL) != 0) {
+            perror("ERROR: pthread");
+            exit(EXIT_FAILURE);
+        }
+
+        pthread_t recv_msg_thread;
+        if (pthread_create(&recv_msg_thread, NULL, (void *)recv_msg_handler, NULL) != 0) {
+            perror("ERROR: pthread");
+            exit(EXIT_FAILURE);
+        }
+
+        gtk_main();
+
+        pthread_join(send_msg_thread, NULL);
+        pthread_join(recv_msg_thread, NULL);
+    } else {
+        printf("L'authentification a échoué. Impossible de continuer.\n");
     }
 
-    pthread_t recv_msg_thread;
-    if (pthread_create(&recv_msg_thread, NULL, (void *)recv_msg_handler, NULL) != 0) {
-        perror("ERROR: pthread");
-        exit(EXIT_FAILURE);
-    }
+    close(local_sockfd);
 
-    pthread_join(send_msg_thread, NULL);
-    pthread_join(recv_msg_thread, NULL);
-
-    close(sockfd);
-
+    exit_requested = true;
     gtk_main_quit();
 
     return NULL;
 }
 
-void send_message(GtkWidget *widget, gpointer data) {
-    const char *message = gtk_entry_get_text(GTK_ENTRY(message_entry));
-    if (send(sockfd, message, strlen(message), 0) == -1) {
-        perror("Error sending message");
-    } else {
-        append_message(name);
-        append_message(": ");
-        append_message(message);
-        append_message("\n");
-        gtk_entry_set_text(GTK_ENTRY(message_entry), "");
-    }
-}
+
+void send_message(GtkWidget *widget, gpointer data);
+
 
 void start_client() {
     gtk_init(NULL, NULL);
@@ -570,7 +671,7 @@ void start_client() {
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(messages_view), GTK_WRAP_WORD_CHAR);
 
     message_entry = gtk_entry_new();
-    g_signal_connect(message_entry, "activate", G_CALLBACK(send_message), NULL);
+    g_signal_connect(message_entry, "activate", G_CALLBACK(append_message), NULL);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 5);
     gtk_box_pack_start(GTK_BOX(vbox), messages_view, TRUE, TRUE, 0);
@@ -590,67 +691,94 @@ void start_client() {
     pthread_join(network_thread_id, NULL);
 }
 
+void send_message(GtkWidget *widget, gpointer data) {
+    const char *message = gtk_entry_get_text(GTK_ENTRY(message_entry));
+    if (send(sockfd, message, strlen(message), 0) == -1) {
+        perror("Error sending message");
+    } else {
+        append_message(name);
+        append_message(": ");
+        append_message(message);
+        append_message("\n");
+        gtk_entry_set_text(GTK_ENTRY(message_entry), "");
+    }
+}
+
+int connect_to_server() {
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1) {
+        perror("Error creating socket");
+        return -1;
+    }
+    printf("Client socket created successfully.\n");
+
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(8001);
+
+    if (inet_pton(AF_INET, "172.20.10.2", &server_addr.sin_addr) <= 0) {
+        perror("Invalid address/Address not supported");
+        close(sockfd);
+        return -1;
+    }
+
+    int err = connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    if (err == -1) {
+        perror("ERROR: connect");
+        close(sockfd);
+        return -1;
+    }
+
+    return sockfd;
+}
 
 int main() {
     signal(SIGINT, catch_ctrl_c_and_exit);
 
+    // Créer le socket une seule fois au début du programme
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1) {
+        return EXIT_FAILURE;
+    }
+
+    int authentication_successful = 0;
     while (1) {
-        printf("1. Login\n2. Create Account\n3. Quit\nChoose an option: ");
+
+        printf("1. Connexion\n2. Créer un compte\n3. Quitter\nChoisissez une option : ");
         int choice;
         if (scanf("%d", &choice) != 1) {
-            printf("Invalid choice\n");
-            return EXIT_FAILURE;
+            printf("Option invalide\n");
+            break;
         }
 
-        // Flush the newline character from the buffer
+        // Vider le caractère de nouvelle ligne du tampon
         while (getchar() != '\n');
 
         if (choice == 3) {
             // Quitter le programme
-            printf("Goodbye!\n");
-            return EXIT_SUCCESS;
+            printf("Au revoir !\n");
+            break;
         }
 
         if (choice != 1 && choice != 2) {
-            printf("Invalid choice\n");
+            printf("Option invalide\n");
             continue;  // Revenir au début de la boucle
         }
 
-        int authentication_successful = 0;
+        if (choice == 1) {
+            // Login
+            authentication_successful = login(sockfd);
+        } else if (choice == 2) {
+            // Create an account
+            create_account(sockfd);
+        }
 
-        while (!authentication_successful) {
-            if (choice == 1) {
-                // Se connecter
-                // ...
-
-            } else if (choice == 2) {
-                // Créer un compte
-                create_account(sockfd);
-
-            }
-
-            printf("Please enter your name: ");
-            if (fgets(name, sizeof(name), stdin) == NULL) {
-                printf("Error reading name\n");
-                return EXIT_FAILURE;
-            }
-            str_trim_lf(name, strlen(name));
-
-            if (strlen(name) > 30 || strlen(name) < 2) {
-                printf("Name must be less than 30 and more than 2 characters.\n");
-                return EXIT_FAILURE;
-            }
-
-            start_client();
-
-            // Vérifier si l'authentification a réussi
-            // Si oui, sortir de la boucle
-            // Sinon, demander à l'utilisateur de réessayer ou de créer un compte
+        if (!authentication_successful) {
             printf("Authentication failed. Do you want to retry? (y/n): ");
             char retry_choice;
             if (scanf(" %c", &retry_choice) != 1) {
                 printf("Invalid choice\n");
-                return EXIT_FAILURE;
+                break;
             }
 
             // Flush the newline character from the buffer
@@ -658,6 +786,13 @@ int main() {
 
             if (retry_choice != 'y' && retry_choice != 'Y') {
                 break;
+            }
+
+            // Reconnecter le socket avant la nouvelle tentative
+            close(sockfd);
+            sockfd = connect_to_server();
+            if (sockfd == -1) {
+                return EXIT_FAILURE;
             }
         }
     }
